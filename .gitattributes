@@ -1,0 +1,8 @@
+# Keep the shell script runnable on macOS/Linux regardless of the clone's
+# core.autocrlf setting, and stop CRLF from sneaking into the patch document
+# (a stray \r in YAML scalars is a needless trap).
+* text=auto
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.mjs  text eol=lf
+*.md   text eol=lf

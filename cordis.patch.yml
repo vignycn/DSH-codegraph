@@ -1,0 +1,57 @@
+# DSH-codegraph — user patch layer for DeepSeek Harness (DSH)
+#
+# Adds the CodeGraph MCP server to a DSH profile, so the model can call
+# `mcp__codegraph__codegraph_explore` instead of grepping/reading files.
+#
+# HOW TO USE
+#   Copy the YAML document at the end of this file (everything after the cut
+#   marker line) into the END of
+#     Windows:       %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml
+#     macOS/Linux:   ~/.dsh/profiles/desktop/cordis.patch.yml
+#   then replace REPLACE_WITH_PROJECT_PATH with an indexed project path.
+#
+#   Or just run install.ps1 / install.sh, which does that for you.
+#
+# TWO THINGS THAT WILL SILENTLY BREAK THIS FILE — read before editing:
+#   1. The `insert:` wrapper is mandatory. A top-level `- id: ...` entry
+#      PATCHES an existing entry; when the id does not exist yet the loader
+#      drops it with a warning on stderr that is invisible in the app.
+#   2. The `!!js` values must be single-quoted. A plain YAML scalar cannot
+#      contain " : ", so an unquoted ternary stops parsing and the whole
+#      patch layer is rejected.
+#
+--- cut here ---
+- insert:
+    - id: mcp-codegraph
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        # Public tool names become mcp__<serverName>__<toolName>.
+        serverName: codegraph
+        transport: stdio
+
+        # Windows: the `codegraph` command is a .cmd shim, which Node cannot
+        # spawn directly (ENOENT), so run CodeGraph's bundled node runtime
+        # against its CLI entry instead. CODEGRAPH_INSTALL_DIR is honored for
+        # non-default installs.
+        #
+        # macOS/Linux: GUI-launched apps do not inherit your shell PATH, so
+        # `command: codegraph` is a coin flip. We go through /bin/sh and probe
+        # in order: $CODEGRAPH_BIN, PATH, $CODEGRAPH_INSTALL_DIR (default
+        # ~/.codegraph), then the installer's ~/.local/bin symlink.
+        #
+        # NOTE: the single quotes below are required. A plain YAML scalar ends
+        # at the first " : ", which an unquoted ternary contains.
+        command: !!js 'process.platform === "win32" ? ((process.env.CODEGRAPH_INSTALL_DIR ?? (process.env.LOCALAPPDATA + "\\codegraph")) + "\\current\\node.exe") : "/bin/sh"'
+        args: !!js 'process.platform === "win32" ? [((process.env.CODEGRAPH_INSTALL_DIR ?? (process.env.LOCALAPPDATA + "\\codegraph")) + "\\current\\lib\\dist\\bin\\codegraph.js"), "serve", "--mcp"] : ["-c", "b=${CODEGRAPH_BIN:-}; [ -n \"$b\" ] || b=$(command -v codegraph 2>/dev/null); [ -n \"$b\" ] || b=\"${CODEGRAPH_INSTALL_DIR:-$HOME/.codegraph}/current/bin/codegraph\"; [ -x \"$b\" ] || b=\"$HOME/.local/bin/codegraph\"; [ -x \"$b\" ] || { echo \"DSH-codegraph: codegraph binary not found; set CODEGRAPH_BIN\" >&2; exit 127; }; exec \"$b\" serve --mcp"]'
+
+        # MUST be a directory that CodeGraph has indexed (contains .codegraph/).
+        # An empty string inherits the harness working directory, which is
+        # usually NOT your project and yields "No CodeGraph project is loaded".
+        cwd: 'REPLACE_WITH_PROJECT_PATH'
+
+        # CodeGraph can take a second on a cold start; default is 60s.
+        toolCallTimeoutMs: 120000
+
+        # Keep the harness booting even if CodeGraph is missing: the entry then
+        # activates with no tools instead of failing the plugin.
+        failOnStartupError: false

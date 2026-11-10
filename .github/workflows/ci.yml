@@ -1,0 +1,173 @@
+name: CI
+
+# Proves the patch document actually works, on the three platforms it claims to
+# support: a real CodeGraph install from the vendor's own installer, a real
+# project index, the real installer script, and a real MCP session driven
+# through the config it wrote.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      codegraph_version:
+        description: CodeGraph release tag to install (default v1.6.2)
+        required: false
+        default: v1.6.2
+
+permissions:
+  contents: read
+
+env:
+  CODEGRAPH_VERSION: ${{ github.event.inputs.codegraph_version || 'v1.6.2' }}
+
+jobs:
+  lint:
+    name: validate config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dev dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate the patch document and installers
+        run: npm run lint
+
+      - name: Bash syntax
+        run: bash -n install.sh
+
+  e2e-posix:
+    name: e2e (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install CodeGraph (vendor installer, pinned version)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+          "$HOME/.codegraph/current/bin/codegraph" version
+
+      - name: Build a fixture project and index it
+        run: |
+          FIXTURE="$RUNNER_TEMP/fixture"
+          mkdir -p "$FIXTURE/src"
+          cat > "$FIXTURE/src/greeter.js" <<'EOF'
+          export function greet(name) {
+            return `hello ${name}`;
+          }
+
+          export function farewell(name) {
+            return `bye ${name}`;
+          }
+          EOF
+          "$HOME/.codegraph/current/bin/codegraph" init -y "$FIXTURE"
+          "$HOME/.codegraph/current/bin/codegraph" status "$FIXTURE"
+          echo "FIXTURE=$FIXTURE" >> "$GITHUB_ENV"
+
+      - name: Seed an empty DSH profile patch layer
+        run: |
+          mkdir -p "$HOME/.dsh/profiles/desktop"
+          printf '%s\n' '[]' > "$HOME/.dsh/profiles/desktop/cordis.patch.yml"
+
+      - name: Run install.sh
+        run: bash install.sh "$FIXTURE"
+
+      - name: Run install.sh again (must be idempotent)
+        run: |
+          bash install.sh "$FIXTURE"
+          count="$(grep -c '^- insert:' "$HOME/.dsh/profiles/desktop/cordis.patch.yml")"
+          echo "insert blocks: $count"
+          test "$count" = "1"
+
+      - name: Install dev dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: MCP smoke test (POSIX PATH deliberately stripped)
+        run: |
+          node .github/scripts/smoke.mjs \
+            "$HOME/.dsh/profiles/desktop/cordis.patch.yml" "$FIXTURE"
+
+  e2e-windows:
+    name: e2e (windows-latest)
+    needs: lint
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install CodeGraph (vendor installer, pinned version)
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex
+          & "$env:LOCALAPPDATA\codegraph\current\bin\codegraph.cmd" version
+
+      - name: Build a fixture project and index it
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'fixture'
+          New-Item -ItemType Directory -Force (Join-Path $fixture 'src') | Out-Null
+          $src = @'
+          export function greet(name) {
+            return `hello ${name}`;
+          }
+
+          export function farewell(name) {
+            return `bye ${name}`;
+          }
+          '@
+          Set-Content -Path (Join-Path $fixture 'src\greeter.js') -Value $src -Encoding utf8
+          & "$env:LOCALAPPDATA\codegraph\current\bin\codegraph.cmd" init -y $fixture
+          & "$env:LOCALAPPDATA\codegraph\current\bin\codegraph.cmd" status $fixture
+          "FIXTURE=$fixture" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Seed an empty DSH profile patch layer
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $dir 'cordis.patch.yml'), "[]`n")
+
+      - name: Run install.ps1
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -ProjectPath $env:FIXTURE
+
+      - name: Run install.ps1 again (must be idempotent)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -ProjectPath $env:FIXTURE
+          $patch = Join-Path $env:USERPROFILE '.dsh\profiles\desktop\cordis.patch.yml'
+          $count = (Select-String -Path $patch -Pattern '^- insert:' -SimpleMatch).Count
+          Write-Host "insert blocks: $count"
+          if ($count -ne 1) { throw "expected exactly one insert block, got $count" }
+
+      - name: Install dev dependencies
+        shell: pwsh
+        run: npm install --no-audit --no-fund
+
+      - name: MCP smoke test
+        shell: pwsh
+        run: |
+          node .github/scripts/smoke.mjs `
+            (Join-Path $env:USERPROFILE '.dsh\profiles\desktop\cordis.patch.yml') $env:FIXTURE

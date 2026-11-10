@@ -1,0 +1,15 @@
+{
+  "name": "dsh-codegraph",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Wire the CodeGraph MCP server into DeepSeek Harness (DSH) profiles.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "lint": "node .github/scripts/validate.mjs",
+    "test": "node .github/scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "yaml": "^2.6.0"
+  }
+}
